@@ -254,11 +254,16 @@ class DRPredictor:
 
         print(f"[DRPredictor] Loading ConvNeXt JIT model from {self.convnext_path} on {self.device}...")
         m_jit = torch.jit.load(self.convnext_path, map_location=self.device)
+        sd = {k.replace('base_model.', ''): v for k, v in m_jit.state_dict().items() if k != 'log_prior'}
+        del m_jit
+        import gc
+        gc.collect()
         
         # Recreate PyTorch timm model to support hooks for Grad-CAM
         self.model = timm.create_model("convnext_tiny", pretrained=False, num_classes=5)
-        sd = {k.replace('base_model.', ''): v for k, v in m_jit.state_dict().items() if k != 'log_prior'}
         self.model.load_state_dict(sd)
+        del sd
+        gc.collect()
         self.model.to(self.device)
         self.model.eval()
         
