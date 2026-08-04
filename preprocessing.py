@@ -7,6 +7,13 @@ Hỗ trợ loại bỏ viền đen, resize giữ tỷ lệ (letterbox), lọc nh
 
 from __future__ import annotations
 import os
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_MAIN_FREE"] = "1"
+os.environ["GOTO_NUM_THREADS"] = "1"
+
 import io
 from typing import Tuple, Union
 import cv2
@@ -256,7 +263,18 @@ class DRPredictor:
 
         print(f"[DRPredictor] Loading ConvNeXt JIT model from {self.convnext_path} on {self.device}...")
         m_jit = torch.jit.load(self.convnext_path, map_location=self.device)
-        sd = {k.replace('base_model.', ''): v for k, v in m_jit.state_dict().items() if k != 'log_prior'}
+        
+        # Shift state dict references key-by-key to avoid RAM spikes
+        jit_sd = m_jit.state_dict()
+        sd = {}
+        for k in list(jit_sd.keys()):
+            if k == 'log_prior':
+                continue
+            new_k = k.replace('base_model.', '')
+            sd[new_k] = jit_sd[k]
+            del jit_sd[k]
+            
+        del jit_sd
         del m_jit
         import gc
         gc.collect()
