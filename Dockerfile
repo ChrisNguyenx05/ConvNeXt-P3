@@ -27,8 +27,7 @@ RUN pip install --no-cache-dir -r requirements_deploy.txt
 # Requires HF_TOKEN as a build argument: docker build --build-arg HF_TOKEN=your_token ...
 ARG HF_TOKEN
 RUN mkdir -p convnext_results && \
-    python -c "import os; from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='chrisnguyenx/ConvNeXt-P3', filename='convnext_inference.pt', local_dir='convnext_results', token='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
-')"
+    python -c "import os; from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='chrisnguyenx/ConvNeXt-P3', filename='convnext_inference.pt', local_dir='convnext_results', token='${HF_TOKEN}')"
 
 # Copy code
 COPY preprocessing.py .
