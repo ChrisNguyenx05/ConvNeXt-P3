@@ -20,9 +20,17 @@ import cv2
 import numpy as np
 from PIL import Image
 import torch
-# Disable multi-threading memory overhead in PyTorch
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
+# Disable multi-threading memory overhead in PyTorch safely
+try:
+    torch.set_num_threads(1)
+except Exception:
+    pass
+
+try:
+    torch.set_num_interop_threads(1)
+except Exception:
+    pass
+
 torch.set_grad_enabled(False)
 from torchvision import transforms
 
