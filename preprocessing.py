@@ -147,9 +147,94 @@ def prepare_image_tensor(
     return tensor
 
 
+import base64
+import timm
+from typing import Optional, Tuple
+import torch.nn.functional as F
+import torch.nn as nn
+
+class AuthenticConvNeXtGradCAM:
+    """
+    Authentic Grad-CAM for ConvNeXt architectures using PyTorch forward and full backward hooks.
+    Target layer: ConvNeXt Stage 4 (model.stages[-1]).
+    """
+    def __init__(self, model: nn.Module, target_layer: Optional[nn.Module] = None):
+        self.model = model
+        self.model.eval()
+
+        if target_layer is None:
+            if hasattr(model, "stages"):
+                target_layer = model.stages[-1]
+            elif hasattr(model, "features"):
+                target_layer = model.features[-1]
+            else:
+                for name, module in reversed(list(model.named_modules())):
+                    if isinstance(module, (nn.Conv2d, nn.Sequential)):
+                        target_layer = module
+                        break
+
+        self.target_layer = target_layer
+        self.activations = None
+        self.gradients = None
+
+        self.handles = []
+        if self.target_layer is not None:
+            h_fwd = self.target_layer.register_forward_hook(self._forward_hook)
+            h_bwd = self.target_layer.register_full_backward_hook(self._backward_hook)
+            self.handles.extend([h_fwd, h_bwd])
+
+    def _forward_hook(self, module, input, output):
+        self.activations = output.detach()
+
+    def _backward_hook(self, module, grad_input, grad_output):
+        self.gradients = grad_output[0].detach()
+
+    def generate_cam(self, input_tensor: torch.Tensor, target_class: Optional[int] = None) -> Tuple[np.ndarray, int, float]:
+        self.model.zero_grad()
+        x = input_tensor.clone().detach().requires_grad_(True)
+
+        logits = self.model(x)
+        probs = F.softmax(logits, dim=1)
+
+        if target_class is None:
+            target_class = int(torch.argmax(logits, dim=1).item())
+
+        score = logits[0, target_class]
+        score.backward()
+
+        if self.activations is None or self.gradients is None:
+            cam = np.ones((x.shape[2], x.shape[3]), dtype=np.float32)
+            return cam, target_class, float(probs[0, target_class].item())
+
+        grads = self.gradients.cpu().data.numpy()[0]  # [C, H, W]
+        acts = self.activations.cpu().data.numpy()[0]  # [C, H, W]
+
+        weights = np.mean(grads, axis=(1, 2))  # [C]
+        cam = np.zeros(acts.shape[1:], dtype=np.float32)
+        for i, w in enumerate(weights):
+            cam += w * acts[i, :, :]
+
+        cam = np.maximum(cam, 0)  # ReLU
+        if cam.max() > cam.min():
+            cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+        else:
+            cam = np.zeros_like(cam)
+
+        h, w = x.shape[2], x.shape[3]
+        cam = cv2.resize(cam, (w, h))
+        return cam, target_class, float(probs[0, target_class].item())
+
+    def remove_hooks(self):
+        for h in self.handles:
+            h.remove()
+
+
 class DRPredictor:
-    def __init__(self, convnext_path: str | None = None, vit_path: str | None = None):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def __init__(self, convnext_path: str | None = None, device: str | None = None):
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
         
         # Candidate paths for ConvNeXt
         convnext_candidates = [
@@ -167,29 +252,18 @@ class DRPredictor:
         if self.convnext_path is None:
             self.convnext_path = "convnext_results/convnext_inference.pt"
 
-        # Candidate paths for ViT
-        vit_candidates = [
-            vit_path,
-            "vit_inference.pt",
-            "vit_results/vit_inference.pt",
-            os.path.join(os.path.dirname(__file__), "vit_inference.pt"),
-            os.path.join(os.path.dirname(__file__), "vit_results", "vit_inference.pt"),
-        ]
-        self.vit_path = None
-        for cand in vit_candidates:
-            if cand and os.path.exists(cand):
-                self.vit_path = cand
-                break
-        if self.vit_path is None:
-            self.vit_path = "vit_results/vit_inference.pt"
-
-        print(f"[DRPredictor] Loading ConvNeXt from {self.convnext_path} on {self.device}...")
-        self.convnext = torch.jit.load(self.convnext_path, map_location=self.device)
-        self.convnext.eval()
+        print(f"[DRPredictor] Loading ConvNeXt JIT model from {self.convnext_path} on {self.device}...")
+        m_jit = torch.jit.load(self.convnext_path, map_location=self.device)
         
-        print(f"[DRPredictor] Loading ViT from {self.vit_path} on {self.device}...")
-        self.vit = torch.jit.load(self.vit_path, map_location=self.device)
-        self.vit.eval()
+        # Recreate PyTorch timm model to support hooks for Grad-CAM
+        self.model = timm.create_model("convnext_tiny", pretrained=False, num_classes=5)
+        sd = {k.replace('base_model.', ''): v for k, v in m_jit.state_dict().items() if k != 'log_prior'}
+        self.model.load_state_dict(sd)
+        self.model.to(self.device)
+        self.model.eval()
+        
+        # Initialize Grad-CAM engine
+        self.cam_engine = AuthenticConvNeXtGradCAM(self.model)
         
         self.class_names = {
             0: "No DR",
@@ -198,8 +272,6 @@ class DRPredictor:
             3: "Severe",
             4: "Proliferative DR",
         }
-        
-        self.threshold_multipliers = np.array([1.7077, 0.6497, 1.1177, 0.9007, 0.6243], dtype=np.float32)
 
     def predict(self, image_input: Union[str, bytes, Image.Image, np.ndarray], use_ben_graham: bool = True) -> dict:
         # Prepare input tensor using existing prepare_image_tensor function
@@ -207,26 +279,44 @@ class DRPredictor:
         
         # Model forward passes
         with torch.no_grad():
-            prob_cn = self.convnext(tensor)[0].cpu().numpy()
-            prob_vit = self.vit(tensor)[0].cpu().numpy()
+            logits = self.model(tensor)
+            probs = F.softmax(logits, dim=1)[0].cpu().numpy()
             
-        # Soft Voting Ensemble
-        prob_ensemble = 0.5 * prob_cn + 0.5 * prob_vit
+        class_id = int(np.argmax(probs))
         
-        # Apply Optimized Threshold Multipliers
-        scaled_probs = prob_ensemble * self.threshold_multipliers
-        final_probs = scaled_probs / np.sum(scaled_probs)
-        class_id = int(np.argmax(final_probs))
+        # Run Grad-CAM with gradients enabled locally
+        with torch.enable_grad():
+            cam, _, _ = self.cam_engine.generate_cam(tensor, target_class=class_id)
+            
+        # Generate BGR image for overlay
+        img_bgr = load_image(image_input)
+        processed_bgr = full_preprocess_pipeline(
+            img_bgr, target_size=(224, 224), use_ben_graham=use_ben_graham
+        )
+        
+        # Apply JET color map to CAM heatmap
+        heatmap = cv2.applyColorMap(np.uint8(255 * cam), cv2.COLORMAP_JET)
+        
+        # Overlay heatmap with the preprocessed image (both are 224x224 BGR)
+        overlay = cv2.addWeighted(processed_bgr, 0.6, heatmap, 0.4, 0)
+        
+        # Encode overlay to base64
+        _, encoded_img = cv2.imencode(".jpg", overlay)
+        base64_gradcam = base64.b64encode(encoded_img).decode("utf-8")
+        gradcam_base64_str = f"data:image/jpeg;base64,{base64_gradcam}"
         
         return {
             "class_id": class_id,
             "class_name": self.class_names[class_id],
-            "confidence": float(final_probs[class_id]),
+            "confidence": float(probs[class_id]),
             "probabilities": {
-                "No DR": float(final_probs[0]),
-                "Mild": float(final_probs[1]),
-                "Moderate": float(final_probs[2]),
-                "Severe": float(final_probs[3]),
-                "Proliferative DR": float(final_probs[4]),
+                "No DR": float(probs[0]),
+                "Mild": float(probs[1]),
+                "Moderate": float(probs[2]),
+                "Severe": float(probs[3]),
+                "Proliferative DR": float(probs[4]),
             },
+            "gradcam_image_base64": gradcam_base64_str,
         }
+
+

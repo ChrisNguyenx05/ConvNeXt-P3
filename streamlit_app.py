@@ -7,15 +7,15 @@ from preprocessing import DRPredictor, full_preprocess_pipeline
 
 # Page configuration
 st.set_page_config(
-    page_title="Chẩn đoán Bệnh võng mạc tiểu đường",
+    page_title="Chẩn đoán Bệnh võng mạc tiểu đường - ConvNeXt",
     page_icon="👁️",
     layout="centered"
 )
 
-st.title("👁️ Chẩn Đoán Bệnh Võng Mạc Tiểu Đường")
+st.title("👁️ Chẩn Đoán Bệnh Võng Mạc Tiểu Đường (ConvNeXt)")
 st.write(
     "Hệ thống AI hỗ trợ chẩn đoán mức độ Bệnh võng mạc tiểu đường (Diabetic Retinopathy - DR) "
-    "sử dụng mô hình Ensemble tối ưu ngưỡng giữa ConvNeXt-Tiny và DeiT-ViT-Tiny."
+    "sử dụng mô hình ConvNeXt-Tiny."
 )
 
 # Cache model loader to avoid downloading and reloading on every user interaction
@@ -33,12 +33,7 @@ def load_models():
             filename="convnext_inference.pt",
             token=hf_token
         )
-        vit_path = hf_hub_download(
-            repo_id="chrisnguyenx/DeiT-ViT-P3",
-            filename="vit_inference.pt",
-            token=hf_token
-        )
-        predictor = DRPredictor(convnext_path=convnext_path, vit_path=vit_path)
+        predictor = DRPredictor(convnext_path=convnext_path)
     return predictor
 
 try:
@@ -72,9 +67,9 @@ if uploaded_file is not None:
     file_bytes = uploaded_file.read()
     image = Image.open(uploaded_file)
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.subheader("Ảnh gốc đã tải lên")
+        st.subheader("Ảnh gốc")
         st.image(image, use_column_width=True)
         
     # Run prediction
@@ -90,8 +85,13 @@ if uploaded_file is not None:
         result = predictor.predict(file_bytes, use_ben_graham=True)
         
     with col2:
-        st.subheader("Ảnh đã tiền xử lý (Ben Graham)")
+        st.subheader("Tiền xử lý")
         st.image(processed_rgb, use_column_width=True)
+        
+    with col3:
+        st.subheader("Bản đồ Grad-CAM")
+        if "gradcam_image_base64" in result:
+            st.image(result["gradcam_image_base64"], use_column_width=True)
         
     st.divider()
     

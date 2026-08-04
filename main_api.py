@@ -77,10 +77,9 @@ def get_predictor() -> DRPredictor:
         print("[INFO] Dang nap mo hinh AI vao RAM/GPU...")
         try:
             convnext_path = "convnext_results/convnext_inference.pt"
-            vit_path = "vit_results/vit_inference.pt"
             
             # Nếu không tìm thấy file cục bộ, tự động tải về từ Hugging Face
-            if not os.path.exists(convnext_path) or not os.path.exists(vit_path):
+            if not os.path.exists(convnext_path):
                 print("[INFO] Không tìm thấy tệp mô hình cục bộ. Đang tải tự động từ Hugging Face Hub...")
                 from huggingface_hub import hf_hub_download
                 hf_token = os.getenv("HF_TOKEN")
@@ -90,13 +89,8 @@ def get_predictor() -> DRPredictor:
                     filename="convnext_inference.pt",
                     token=hf_token
                 )
-                vit_path = hf_hub_download(
-                    repo_id="chrisnguyenx/DeiT-ViT-P3",
-                    filename="vit_inference.pt",
-                    token=hf_token
-                )
                 
-            predictor = DRPredictor(convnext_path=convnext_path, vit_path=vit_path)
+            predictor = DRPredictor(convnext_path=convnext_path)
             print(f"[SUCCESS] Da nap thanh cong mo hinh AI tren thiet bi: {predictor.device}")
         except Exception as e:
             print(f"[ERROR] Loi khoi tao mo hinh AI: {e}")
@@ -116,7 +110,7 @@ def startup_event():
 def root():
     """Endpoint gốc kiểm tra trạng thái dịch vụ."""
     return {
-        "message": "AI Diabetic Retinopathy API Service is running.",
+        "message": "AI Diabetic Retinopathy API Service (ConvNeXt) is running.",
         "docs_url": "/docs",
         "health_check": "/api/info",
         "predict_endpoint": "POST /api/predict"
@@ -130,7 +124,7 @@ def get_info():
         pred_instance = get_predictor()
         return {
             "status": "online",
-            "model_name": "Ensemble (ConvNeXt-Tiny + ViT-Tiny)",
+            "model_name": "ConvNeXt-Tiny",
             "num_classes": 5,
             "device": str(pred_instance.device),
             "classes": pred_instance.class_names
@@ -183,6 +177,7 @@ async def predict_image(file: UploadFile = File(...)):
             },
             "clinical_guidance": clinical_info,
             "preprocessed_image_base64": f"data:image/jpeg;base64,{base64_preprocessed}",
+            "gradcam_image_base64": result.get("gradcam_image_base64", ""),
         }
 
     except Exception as e:
