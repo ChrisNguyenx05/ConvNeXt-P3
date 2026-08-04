@@ -107,6 +107,7 @@ def startup_event():
 
 
 @app.get("/")
+@app.head("/")
 def root():
     """Endpoint gốc kiểm tra trạng thái dịch vụ."""
     return {
