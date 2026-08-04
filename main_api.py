@@ -100,10 +100,7 @@ def get_predictor() -> DRPredictor:
 
 @app.on_event("startup")
 def startup_event():
-    try:
-        get_predictor()
-    except Exception as e:
-        print(f"[WARNING] Startup predictor deferred: {e}")
+    print("[INFO] Startup completed. Predictor will be lazy-loaded on the first request.")
 
 
 @app.get("/")
