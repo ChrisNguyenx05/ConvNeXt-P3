@@ -204,6 +204,7 @@ class AuthenticConvNeXtGradCAM:
 
         if self.activations is None or self.gradients is None:
             cam = np.ones((x.shape[2], x.shape[3]), dtype=np.float32)
+            self.last_probs = probs[0].detach().cpu().numpy()
             return cam, target_class, float(probs[0, target_class].item())
 
         grads = self.gradients.cpu().data.numpy()[0]  # [C, H, W]
@@ -222,6 +223,7 @@ class AuthenticConvNeXtGradCAM:
 
         h, w = x.shape[2], x.shape[3]
         cam = cv2.resize(cam, (w, h))
+        self.last_probs = probs[0].detach().cpu().numpy()
         return cam, target_class, float(probs[0, target_class].item())
 
     def remove_hooks(self):
@@ -282,16 +284,16 @@ class DRPredictor:
         # Prepare input tensor using existing prepare_image_tensor function
         tensor = prepare_image_tensor(image_input, use_ben_graham=use_ben_graham).unsqueeze(0).to(self.device)
         
-        # Model forward passes
-        with torch.no_grad():
-            logits = self.model(tensor)
-            probs = F.softmax(logits, dim=1)[0].cpu().numpy()
-            
-        class_id = int(np.argmax(probs))
-        
-        # Run Grad-CAM with gradients enabled locally
+        # Run Grad-CAM directly with gradients enabled locally
         with torch.enable_grad():
-            cam, _, _ = self.cam_engine.generate_cam(tensor, target_class=class_id)
+            cam, class_id, confidence = self.cam_engine.generate_cam(tensor, target_class=None)
+            probs = self.cam_engine.last_probs
+
+        # Free tensor and gradients immediately to prevent RAM spikes / OOM
+        del tensor
+        self.model.zero_grad(set_to_none=True)
+        import gc
+        gc.collect()
             
         # Generate BGR image for overlay
         img_bgr = load_image(image_input)
@@ -313,7 +315,7 @@ class DRPredictor:
         return {
             "class_id": class_id,
             "class_name": self.class_names[class_id],
-            "confidence": float(probs[class_id]),
+            "confidence": float(confidence),
             "probabilities": {
                 "No DR": float(probs[0]),
                 "Mild": float(probs[1]),
