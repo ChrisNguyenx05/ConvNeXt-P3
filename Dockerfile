@@ -23,10 +23,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements_deploy.txt .
 RUN pip install --no-cache-dir -r requirements_deploy.txt
 
-# Pre-download ensemble JIT weights during Docker build to avoid download RAM overhead at runtime
-RUN mkdir -p convnext_results vit_results && \
-    python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='chrisnguyenx/ConvNeXt-P3', filename='convnext_inference.pt', local_dir='convnext_results')" && \
-    python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='chrisnguyenx/DeiT-ViT-P3', filename='vit_inference.pt', local_dir='vit_results')"
+# Pre-download JIT weights during Docker build to avoid download RAM overhead at runtime.
+# Requires HF_TOKEN as a build argument: docker build --build-arg HF_TOKEN=your_token ...
+ARG HF_TOKEN
+RUN mkdir -p convnext_results && \
+    python -c "import os; from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='chrisnguyenx/ConvNeXt-P3', filename='convnext_inference.pt', local_dir='convnext_results', token='${HF_TOKEN}')"
 
 # Copy code
 COPY preprocessing.py .
